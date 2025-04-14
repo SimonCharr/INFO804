@@ -1,144 +1,499 @@
 using UnityEngine;
 using System.Collections.Generic;
-using System.Linq; // Nécessaire pour certaines opérations sur les dictionnaires/listes
+using System.Linq;
 
-// Ajoute une dépendance : ce GameObject DOIT avoir un composant TankHealth.
 [RequireComponent(typeof(TankHealth))]
 public class EnemyTankController : MonoBehaviour
 {
-    [Header("Références Cible & Combat")]
-    public Transform playerTank;             // Assigner le Transform du tank joueur dans l'Inspecteur
-    public Transform canonPivot;             // Le Transform du canon qui doit pivoter (enfant du tank)
-    public Transform firePoint;              // Le point d'où les balles sont tirées (enfant du canon)
-    public GameObject bulletPrefab;          // Le prefab de la balle à instancier
+    #region Variables Configurables (Inspecteur)
 
-    [Header("Mouvement & Rotation Châssis")]
-    public float moveSpeed = 3f;             // Vitesse de déplacement en suivant le chemin
-    public float rotationSpeed = 200f;       // Vitesse de rotation du CHASSIS (en degrés par seconde)
+    [Header("Références Tank & Combat")]
+    [Tooltip("Le Transform du canon qui doit pivoter (enfant du tank)")]
+    public Transform canonPivot;
+    [Tooltip("Le point d'où les balles sont tirées (enfant du canon)")]
+    public Transform firePoint;
+    [Tooltip("Le prefab de la balle à instancier")]
+    public GameObject bulletPrefab;
+
+    [Header("Mouvement & Rotation")]
+    [Tooltip("Vitesse de déplacement en suivant le chemin")]
+    public float moveSpeed = 3f;
+    [Tooltip("Vitesse de rotation du CHASSIS vers le prochain point du chemin (degrés/sec)")]
+    public float chassisRotationSpeed = 200f;
+    [Tooltip("Vitesse de rotation du CANON vers la cible (degrés/sec)")]
+    public float canonRotationSpeed = 300f;
 
     [Header("Combat")]
-    public float fireRate = 1.0f;            // Temps minimum (secondes) entre deux tirs
-    public float shootingRange = 10f;        // Distance maximale pour commencer à tirer
-    public float canonRotationSpeed = 300f;  // Vitesse de rotation du CANON
+    [Tooltip("Temps minimum (secondes) entre deux tirs")]
+    public float fireRate = 1.0f;
+    [Tooltip("Distance maximale pour que le tank commence à tirer sur la cible")]
+    public float shootingRange = 10f;
+    [Tooltip("Distance à laquelle le tank détecte les joueurs ennemis")]
+    public float detectionRange = 15f;
+    [Tooltip("Layer(s) sur lequel/lesquels se trouvent les tanks joueurs (IMPORTANT!)")]
+    public LayerMask playerLayerMask;
 
-    [Header("Grille de Pathfinding")]
-    public Vector2Int gridSize = new Vector2Int(20, 20); // Taille de la grille en tuiles
-    public float tileSize = 1f;              // Taille d'une tuile en unités monde
-    public LayerMask obstacleLayer;          // Layer (calque) contenant les obstacles pour le pathfinding
-    public float recalculatePathDistanceThreshold = 1.0f; // Seuil de distance pour recalculer le chemin
+    [Header("Pathfinding (Dijkstra)")]
+    [Tooltip("Taille de la grille de navigation en nombre de tuiles")]
+    public Vector2Int gridSize = new Vector2Int(30, 30);
+    [Tooltip("Taille d'une tuile en unités de monde Unity")]
+    public float tileSize = 1f;
+    [Tooltip("Layer(s) contenant les obstacles que le pathfinding doit éviter (IMPORTANT!)")]
+    public LayerMask obstacleLayer;
+    [Tooltip("Fréquence de recalcul du chemin vers la cible (secondes)")]
+    public float pathRecalculationRate = 0.5f;
 
-    // --- État du Pathfinding (variables internes) ---
-    private Vector2Int currentGridPosition;
-    private Vector2Int targetGridPosition;
-    private List<Vector2> path;
-    private int pathIndex;
-    private Vector3 lastPlayerPosition;
+    [Header("Comportement IA")]
+    [Tooltip("Liste des points de capture à considérer comme objectifs (assigner ici ou laisser vide pour recherche auto)")]
+    public List<CapturePoint> capturePointsOfInterest;
+    [Tooltip("Rayon autour de la cible capture point pour choisir une destination proche (en tuiles)")]
+    public int targetPointSearchRadius = 2;
+    [Tooltip("Nombre max d'essais pour trouver un point proche différent de la position actuelle")]
+    public int nearbyPointMaxAttempts = 20;
+    
+    [Header("Patrouille")]
+    [Tooltip("Activer la patrouille quand il n'y a pas d'autres objectifs")]
+    public bool enablePatrolling = true;
+    [Tooltip("Distance maximale pour générer un point de patrouille (en unités)")]
+    public float patrolRadius = 10f;
+    [Tooltip("Temps minimum entre deux changements de point de patrouille (en secondes)")]
+    public float minPatrolWaitTime = 3f;
+    [Tooltip("Temps maximum entre deux changements de point de patrouille (en secondes)")]
+    public float maxPatrolWaitTime = 8f;
 
-    // --- État du Combat (variables internes) ---
-    private float nextFireTime = 0f;         // Temps auquel le prochain tir est autorisé
-    private TankHealth playerHealth;         // Référence au script de vie du joueur
+    #endregion
 
-    // ========================================
-    // --- Méthodes Unity ---
-    // ========================================
+    #region Variables Internes
 
-    void Awake() // Awake est appelé avant Start, idéal pour les références internes
-    {
-        // --- Vérifications initiales ---
-        if (playerTank == null) {
-            Debug.LogError("Le 'Player Tank' n'est pas assigné !", this);
-            enabled = false; return;
+    // --- État Actuel de l'IA ---
+    private enum AIState { Idle, SeekingCapturePoint, AttackingPlayer, Patrolling }
+    private AIState currentState = AIState.Idle;
+
+    // --- Cibles ---
+    private Transform currentTargetPlayer = null;
+    private CapturePoint currentTargetCapturePoint = null;
+    private Vector3 currentNavigationTargetPosition; // Destination précise pour la nav
+    private Vector3 patrolTargetPosition;
+    private float nextPatrolChangeTime = 0f;
+
+    // --- Pathfinding ---
+    private List<Vector2> currentPath;
+    private int currentPathIndex;
+    private float timeSinceLastPathRecalc = 0f;
+    private Vector3 lastTargetPosition; // Dernière pos de NAV cible connue
+    
+    // --- Identité unique pour ce tank ---
+    private string uniqueID;
+
+    // --- Combat ---
+    private float nextFireTime = 0f;
+
+    // --- Références internes ---
+    private TankHealth selfHealth;
+    private string ownTag; // Tag de ce tank ("Enemy")
+
+    // --- Coordination Statique Améliorée ---
+    private static Dictionary<CapturePoint, HashSet<string>> capturePointTargeters = new Dictionary<CapturePoint, HashSet<string>>();
+    
+    #endregion
+
+    #region Méthodes de Coordination Statique Améliorées
+
+    private static void AddTankToTargeters(CapturePoint point, string tankId) {
+        if (point == null || string.IsNullOrEmpty(tankId)) return;
+        
+        if (!capturePointTargeters.ContainsKey(point)) {
+            capturePointTargeters[point] = new HashSet<string>();
         }
-        if (canonPivot == null) Debug.LogError("Le 'Canon Pivot' n'est pas assigné !", this);
-        if (firePoint == null) Debug.LogError("Le 'Fire Point' n'est pas assigné !", this);
-        if (bulletPrefab == null) Debug.LogError("Le 'Bullet Prefab' n'est pas assigné !", this);
-
-        // Vérification du Tag (important pour le système de dégâts)
-        if (gameObject.tag != "Enemy") {
-             Debug.LogWarning($"Le tank ennemi '{gameObject.name}' n'a pas le tag 'Enemy'. Veuillez l'assigner.", this);
+        capturePointTargeters[point].Add(tankId);
+    }
+    
+    private static void RemoveTankFromTargeters(CapturePoint point, string tankId) {
+        if (point == null || string.IsNullOrEmpty(tankId)) return;
+        
+        if (capturePointTargeters.ContainsKey(point)) {
+            capturePointTargeters[point].Remove(tankId);
         }
+    }
+    
+    private static int GetTargetCount(CapturePoint point) {
+        if (point == null) return 0;
+        return capturePointTargeters.TryGetValue(point, out HashSet<string> tanks) ? tanks.Count : 0;
+    }
+    
+    private static bool IsTankTargetingPoint(CapturePoint point, string tankId) {
+        if (point == null || string.IsNullOrEmpty(tankId)) return false;
+        
+        return capturePointTargeters.TryGetValue(point, out HashSet<string> tanks) && tanks.Contains(tankId);
+    }
+    
+    public static void ResetTargetCounts() {
+        capturePointTargeters.Clear();
+        Debug.Log("Compteurs de cibles de points de capture réinitialisés.");
+    }
 
-        // Récupère la référence à la santé du joueur pour vérifier s'il est en vie
-        playerHealth = playerTank.GetComponent<TankHealth>();
-        if (playerHealth == null) {
-            Debug.LogError("Le tank joueur assigné n'a pas de composant TankHealth !", playerTank);
-            // On pourrait désactiver le script ici aussi si la santé du joueur est essentielle
-            // enabled = false; return;
+    #endregion
+
+    #region Méthodes Unity (Awake, Start, Update, OnDestroy)
+
+    void Awake() {
+        selfHealth = GetComponent<TankHealth>();
+        ownTag = gameObject.tag;
+        // Générer un ID unique pour ce tank
+        uniqueID = System.Guid.NewGuid().ToString();
+        
+        // --- Vérifications Awake ---
+        if (canonPivot == null) Debug.LogError($"[{gameObject.name}] Canon Pivot manquant", this);
+        if (firePoint == null) Debug.LogError($"[{gameObject.name}] Fire Point manquant", this);
+        if (bulletPrefab == null) Debug.LogError($"[{gameObject.name}] Bullet Prefab manquant", this);
+        if (playerLayerMask == 0) Debug.LogWarning($"[{gameObject.name}] Player Layer Mask non défini", this);
+        if (obstacleLayer == 0) Debug.LogWarning($"[{gameObject.name}] Obstacle Layer non défini", this);
+    }
+
+    void Start() {
+        if (capturePointsOfInterest == null || capturePointsOfInterest.Count == 0) {
+            capturePointsOfInterest = FindObjectsOfType<CapturePoint>().ToList();
+            Debug.Log($"[{gameObject.name}] Trouvé {capturePointsOfInterest.Count} points de capture.");
+        }
+        
+        // Ajout d'un délai aléatoire pour éviter que tous les tanks décident en même temps
+        Invoke("InitialDecision", Random.Range(0.0f, 0.5f));
+        
+        currentState = AIState.Idle;
+        currentNavigationTargetPosition = transform.position; // Commence sur place
+        lastTargetPosition = transform.position;
+        
+        // Initialisation du point de patrouille
+        GenerateNewPatrolPoint();
+    }
+    
+    void InitialDecision() {
+        DecideNextAction();
+    }
+
+    void Update() {
+        if (selfHealth != null && selfHealth.CurrentHealth <= 0) return; // Ne rien faire si mort
+        
+        // Exécute la boucle logique de l'IA
+        DetectPlayers();
+        DecideNextAction();
+        HandlePathfinding();
+        MoveAlongPath();
+        RotateChassisTowardsWaypoint();
+        RotateCanonTowardsTarget();
+        HandleShooting();
+        
+        // Gestion de la patrouille
+        if (currentState == AIState.Patrolling && Time.time > nextPatrolChangeTime) {
+            GenerateNewPatrolPoint();
         }
     }
 
-    void Start() // Appelé une seule fois après Awake
-    {
-        // Calcul initial du chemin
-        currentGridPosition = WorldToGrid(transform.position);
-        lastPlayerPosition = playerTank.position;
-        FindPath();
+    void OnDestroy() {
+        // Libère la cible de capture si le tank est détruit
+        RemoveTankFromTargeters(currentTargetCapturePoint, uniqueID);
     }
 
-    void Update() // Appelé à chaque image
-    {
-        // --- Vérification de la Cible ---
-        // Si le joueur n'existe plus ou est mort, ne rien faire (ou autre logique : patrouille, etc.)
-        if (playerTank == null || (playerHealth != null && playerHealth.CurrentHealth <= 0)) {
-             path = null; // Arrête le mouvement
-            // Ajouter ici un comportement si le joueur est mort (ex: rester immobile)
+    #endregion
+
+    #region Logique de Décision et Détection
+
+    void DetectPlayers() {
+        Collider2D[] playersInRange = Physics2D.OverlapCircleAll(transform.position, detectionRange, playerLayerMask);
+        Transform closestPlayer = null; 
+        float minDistance = float.MaxValue;
+        
+        foreach (Collider2D playerCollider in playersInRange) {
+            float distance = Vector2.Distance(transform.position, playerCollider.transform.position);
+            if (distance < minDistance) {
+                TankHealth detectedPlayerHealth = playerCollider.GetComponent<TankHealth>();
+                if (detectedPlayerHealth != null && detectedPlayerHealth.CurrentHealth > 0) {
+                    minDistance = distance;
+                    closestPlayer = playerCollider.transform;
+                }
+            }
+        }
+        
+        currentTargetPlayer = closestPlayer;
+    }
+
+    void DecideNextAction() {
+        CapturePoint previousTargetCapturePoint = currentTargetCapturePoint;
+        AIState previousState = currentState;
+        bool targetPointChanged = false;
+
+        // Priorité 1: Joueur dans la zone de détection
+        if (currentTargetPlayer != null) {
+            currentState = AIState.AttackingPlayer;
+            currentTargetCapturePoint = null;
+            currentNavigationTargetPosition = currentTargetPlayer.position;
+            
+            if (previousState != AIState.AttackingPlayer || Vector3.Distance(lastTargetPosition, currentNavigationTargetPosition) > 0.5f) {
+                currentPath = null;
+            }
+            
+            if (previousTargetCapturePoint != null) {
+                targetPointChanged = true;
+            }
+        } 
+        // Priorité 2: Point de capture non contrôlé disponible
+        else if (capturePointsOfInterest != null && capturePointsOfInterest.Count > 0) {
+            CapturePoint bestCapturePoint = FindBestCapturePoint();
+            
+            if (bestCapturePoint != null) {
+                currentState = AIState.SeekingCapturePoint;
+                
+                if (bestCapturePoint != previousTargetCapturePoint) {
+                    currentTargetCapturePoint = bestCapturePoint;
+                    currentNavigationTargetPosition = GetNearbyWalkablePoint(
+                        currentTargetCapturePoint.transform.position, 
+                        WorldToGrid(transform.position), 
+                        targetPointSearchRadius, 
+                        nearbyPointMaxAttempts
+                    );
+                    currentPath = null;
+                    targetPointChanged = true;
+                    Debug.Log($"[{gameObject.name}] Nouvelle cible point {currentTargetCapturePoint.pointName}, navigue vers {currentNavigationTargetPosition}");
+                }
+            }
+            // Priorité 3: Patrouille
+            else if (enablePatrolling) {
+                if (currentState != AIState.Patrolling) {
+                    currentState = AIState.Patrolling;
+                    currentNavigationTargetPosition = patrolTargetPosition;
+                    currentPath = null;
+                    
+                    if (previousTargetCapturePoint != null) {
+                        targetPointChanged = true;
+                    }
+                }
+            } 
+            // Sinon, rester inactif
+            else {
+                if (currentState != AIState.Idle) {
+                    currentState = AIState.Idle;
+                    currentNavigationTargetPosition = transform.position;
+                    currentPath = null;
+                    
+                    if (previousTargetCapturePoint != null) {
+                        targetPointChanged = true;
+                    }
+                }
+                currentTargetCapturePoint = null;
+            }
+        }
+        // Aucun point de capture disponible, passer en mode patrouille
+        else if (enablePatrolling) {
+            if (currentState != AIState.Patrolling) {
+                currentState = AIState.Patrolling;
+                currentNavigationTargetPosition = patrolTargetPosition;
+                currentPath = null;
+                
+                if (previousTargetCapturePoint != null) {
+                    targetPointChanged = true;
+                }
+            }
+            currentTargetCapturePoint = null;
+        }
+        // Aucune action possible, rester inactif
+        else {
+            if (currentState != AIState.Idle) {
+                currentState = AIState.Idle;
+                currentNavigationTargetPosition = transform.position;
+                currentPath = null;
+                
+                if (previousTargetCapturePoint != null) {
+                    targetPointChanged = true;
+                }
+            }
+            currentTargetCapturePoint = null;
+        }
+
+        // Mise à jour des compteurs de ciblage
+        if (targetPointChanged) {
+            RemoveTankFromTargeters(previousTargetCapturePoint, uniqueID);
+            AddTankToTargeters(currentTargetCapturePoint, uniqueID);
+        }
+    }
+
+    CapturePoint FindBestCapturePoint() {
+        if (capturePointsOfInterest == null || capturePointsOfInterest.Count == 0) return null;
+        
+        string playerTag = "Player";
+        
+        // Ajouter une petite perturbation aléatoire à la position du tank pour éviter les décisions identiques
+        Vector3 perturbedPosition = transform.position + new Vector3(
+            Random.Range(-0.5f, 0.5f),
+            Random.Range(-0.5f, 0.5f),
+            0
+        );
+        
+        // Évaluer chaque point de capture non contrôlé par notre équipe
+        var suitablePoints = capturePointsOfInterest
+            .Where(point => point != null && point.controllingTeamTag != ownTag)
+            .Select(point => new {
+                Point = point,
+                DistanceSqr = (point.transform.position - perturbedPosition).sqrMagnitude,
+                Targets = GetTargetCount(point),
+                IsAlreadyTargetedByMe = IsTankTargetingPoint(point, uniqueID)
+            })
+            .ToList();
+        
+        // Si ce tank cible déjà un point, lui donner la priorité
+        var currentlyTargetedPoint = suitablePoints
+            .FirstOrDefault(x => x.IsAlreadyTargetedByMe);
+            
+        if (currentlyTargetedPoint != null) {
+            return currentlyTargetedPoint.Point;
+        }
+        
+        // Sinon, trier par distance et nombre de tanks qui le ciblent déjà
+        var bestPoint = suitablePoints
+            .OrderBy(x => x.Targets)        // D'abord, prioriser les points les moins ciblés
+            .ThenBy(x => x.DistanceSqr)     // Ensuite, prioriser les plus proches
+            .FirstOrDefault();
+            
+        return bestPoint?.Point;
+    }
+
+    Vector3 GetNearbyWalkablePoint(Vector3 origin, Vector2Int currentTankGridPos, int radiusInTiles = 2, int maxAttempts = 20) {
+        Vector2Int originGridPos = WorldToGrid(origin);
+        Vector2Int bestFoundPos = originGridPos;
+        bool foundAnyWalkable = false;
+
+        for (int i = 0; i < maxAttempts; i++) {
+            // Ajout d'une petite variabilité supplémentaire basée sur l'identifiant unique du tank
+            int randomXOffset = (int)(uniqueID.GetHashCode() % 10) - 5;
+            int randomYOffset = (int)((uniqueID.GetHashCode() >> 5) % 10) - 5;
+            
+            int randomX = Random.Range(-radiusInTiles, radiusInTiles + 1) + randomXOffset % 3;
+            int randomY = Random.Range(-radiusInTiles, radiusInTiles + 1) + randomYOffset % 3;
+            
+            Vector2Int potentialGridPos = originGridPos + new Vector2Int(randomX, randomY);
+
+            if (IsWithinBounds(potentialGridPos) && IsWalkable(potentialGridPos)) {
+                foundAnyWalkable = true;
+                bestFoundPos = potentialGridPos;
+
+                if (potentialGridPos != currentTankGridPos) {
+                    return GridToWorld(potentialGridPos);
+                }
+            }
+        }
+
+        if (foundAnyWalkable) {
+            return GridToWorld(bestFoundPos);
+        } else {
+            return origin;
+        }
+    }
+    
+    void GenerateNewPatrolPoint() {
+        int maxAttempts = 20;
+        bool foundValidPoint = false;
+        Vector2Int currentGridPos = WorldToGrid(transform.position);
+        
+        for (int i = 0; i < maxAttempts; i++) {
+            // Générer un point à distance variable du tank
+            float angle = Random.Range(0f, 360f);
+            float distance = Random.Range(patrolRadius * 0.3f, patrolRadius);
+            
+            Vector2 offset = new Vector2(
+                Mathf.Cos(angle * Mathf.Deg2Rad) * distance,
+                Mathf.Sin(angle * Mathf.Deg2Rad) * distance
+            );
+            
+            Vector3 potentialPoint = transform.position + new Vector3(offset.x, offset.y, 0);
+            Vector2Int gridPos = WorldToGrid(potentialPoint);
+            
+            if (IsWithinBounds(gridPos) && IsWalkable(gridPos) && gridPos != currentGridPos) {
+                patrolTargetPosition = GridToWorld(gridPos);
+                foundValidPoint = true;
+                break;
+            }
+        }
+        
+        if (!foundValidPoint) {
+            // Si aucun point valide n'est trouvé, utiliser un point proche
+            patrolTargetPosition = GetNearbyWalkablePoint(transform.position, currentGridPos, 5, 10);
+        }
+        
+        // Si en mode patrouille, mettre à jour la destination de navigation
+        if (currentState == AIState.Patrolling) {
+            currentNavigationTargetPosition = patrolTargetPosition;
+            currentPath = null;
+        }
+        
+        // Planifier le prochain changement de point de patrouille
+        nextPatrolChangeTime = Time.time + Random.Range(minPatrolWaitTime, maxPatrolWaitTime);
+    }
+
+    #endregion
+
+    #region Pathfinding (Dijkstra)
+
+    void HandlePathfinding() {
+        timeSinceLastPathRecalc += Time.deltaTime;
+        bool hasTarget = (currentState != AIState.Idle);
+
+        if (!hasTarget) { 
+            currentPath = null; 
+            return; 
+        }
+
+        Vector2Int startGridPos = WorldToGrid(transform.position);
+        Vector2Int endGridPos = WorldToGrid(currentNavigationTargetPosition);
+
+        // Vérifie si on est déjà dans la case de destination finale
+        if (startGridPos == endGridPos) {
+            currentPath = null;
+            
+            // Si en mode patrouille et arrivé à destination, générer un nouveau point
+            if (currentState == AIState.Patrolling) {
+                GenerateNewPatrolPoint();
+                currentNavigationTargetPosition = patrolTargetPosition;
+                endGridPos = WorldToGrid(currentNavigationTargetPosition);
+                
+                // Si le nouveau point est différent, calculer un chemin
+                if (startGridPos != endGridPos) {
+                    FindPath(currentNavigationTargetPosition, startGridPos, endGridPos);
+                }
+            }
+            
             return;
         }
 
-        // --- Logique de Recalcul du Chemin (inchangée) ---
-        Vector3 currentPlayerPosition = playerTank.position;
-        Vector2Int newTargetGridPosition = WorldToGrid(currentPlayerPosition);
-        float playerMovedDistance = Vector3.Distance(currentPlayerPosition, lastPlayerPosition);
-        bool needsRecalculation = path == null || path.Count == 0 ||
-                                  targetGridPosition != newTargetGridPosition ||
-                                  playerMovedDistance > recalculatePathDistanceThreshold;
-        if (needsRecalculation) {
-            FindPath();
-            lastPlayerPosition = currentPlayerPosition;
-        }
+        // Logique de recalcul
+        bool targetPosChanged = Vector3.Distance(currentNavigationTargetPosition, lastTargetPosition) > 0.1f;
+        bool timerElapsed = timeSinceLastPathRecalc >= pathRecalculationRate;
+        bool pathInvalid = currentPath == null || currentPath.Count == 0;
 
-        // --- Mouvement et Rotation du Châssis (inchangés) ---
-        MoveAlongPath();         // Suit le chemin
-        RotateTowardsTarget();   // Fait pivoter le CHASSIS vers le joueur (selon votre code original)
-                                 // Note : Pourrait être modifié pour suivre le chemin plutôt que le joueur
-
-        // --- Combat ---
-        float distanceToPlayer = Vector2.Distance(transform.position, playerTank.position);
-
-        // 1. Rotation du Canon (toujours viser le joueur si possible)
-        if (canonPivot != null) {
-            RotateCanonTowardsPlayer();
-        }
-
-        // 2. Tir (si à portée et si le délai est écoulé)
-        if (distanceToPlayer <= shootingRange && Time.time >= nextFireTime) {
-            Shoot();
-            nextFireTime = Time.time + fireRate; // Met à jour le temps pour le prochain tir
+        if (pathInvalid || timerElapsed || (currentState == AIState.AttackingPlayer && targetPosChanged)) {
+            FindPath(currentNavigationTargetPosition, startGridPos, endGridPos);
+            timeSinceLastPathRecalc = 0f;
+            lastTargetPosition = currentNavigationTargetPosition;
         }
     }
 
-    // ========================================
-    // --- Fonctions de Pathfinding (Inchangées par rapport à votre code) ---
-    // ========================================
+    void FindPath(Vector3 targetNavPosition, Vector2Int startGridPos, Vector2Int endGridPos) {
+        currentPath = Dijkstra(startGridPos, endGridPos);
 
-    void FindPath() {
-         if (playerTank == null) { path = null; return; } // Sécurité
-        currentGridPosition = WorldToGrid(transform.position);
-        targetGridPosition = WorldToGrid(playerTank.position);
-        path = Dijkstra(currentGridPosition, targetGridPosition);
-        if (path == null || path.Count == 0) {
-            Debug.LogWarning($"[{gameObject.name}] Chemin non trouvé ou vide de {currentGridPosition} à {targetGridPosition}.", this);
-            path = null;
-        } else {
-            if (path.Count > 0 && Vector2.Distance(transform.position, path[0]) < tileSize * 0.5f) {
-                path.RemoveAt(0);
+        if (currentPath == null || currentPath.Count == 0) {
+            if (startGridPos != endGridPos) {
+                Debug.LogWarning($"[{gameObject.name}] ECHEC Pathfinding de {startGridPos} vers {endGridPos} (Dest Monde: {targetNavPosition})");
             }
         }
-        pathIndex = 0;
+
+        // Ajustement initial du chemin
+        if (currentPath != null && currentPath.Count > 0 && Vector2.Distance(transform.position, currentPath[0]) < tileSize * 0.1f) {
+            currentPath.RemoveAt(0);
+        }
+        currentPathIndex = 0;
     }
 
     List<Vector2> Dijkstra(Vector2Int start, Vector2Int end) {
         if (!IsWithinBounds(start) || !IsWalkable(start)) { return null; }
+        if (!IsWithinBounds(end) || !IsWalkable(end)) { return null; }
         var frontier = new PriorityQueue<Vector2Int>(); frontier.Enqueue(start, 0);
         var cameFrom = new Dictionary<Vector2Int, Vector2Int>{ [start] = start };
         var costSoFar = new Dictionary<Vector2Int, float>{ [start] = 0 };
@@ -146,7 +501,7 @@ public class EnemyTankController : MonoBehaviour
             var current = frontier.Dequeue();
             if (current == end) { return ReconstructPath(cameFrom, end); }
             foreach (var next in GetNeighbors(current)) {
-                float moveCost = Vector2Int.Distance(current, next);
+                float moveCost = Vector2.Distance(current, next);
                 float newCost = costSoFar[current] + moveCost;
                 if (!costSoFar.ContainsKey(next) || newCost < costSoFar[next]) {
                     costSoFar[next] = newCost;
@@ -156,23 +511,22 @@ public class EnemyTankController : MonoBehaviour
                 }
             }
         }
-        Debug.LogWarning($"[{gameObject.name}] Frontière vide, aucun chemin trouvé de {start} à {end}.", this);
         return null;
     }
 
     List<Vector2> ReconstructPath(Dictionary<Vector2Int, Vector2Int> cameFrom, Vector2Int current) {
         var totalPath = new List<Vector2>();
         if (!cameFrom.ContainsKey(current)) { Debug.LogError("ReconstructPath: Nœud cible non trouvé."); return totalPath; }
-        Vector2Int startNode = cameFrom.FirstOrDefault(kvp => kvp.Key == kvp.Value).Key; // Trouve le départ
+        Vector2Int startNode = cameFrom.FirstOrDefault(kvp => kvp.Key == kvp.Value).Key;
         Vector2Int step = current;
-        int safety = 0; const int maxSteps = 10000; // Sécurité anti-boucle infinie
+        int safety = 0; const int maxSteps = 10000;
         while (step != startNode && safety < maxSteps) {
             totalPath.Add(GridToWorld(step));
-            if (!cameFrom.ContainsKey(step)) { Debug.LogError($"ReconstructPath: Nœud {step} manquant dans cameFrom."); break; }
+            if (!cameFrom.ContainsKey(step)) { Debug.LogError($"ReconstructPath: Nœud {step} manquant."); break; }
             step = cameFrom[step];
             safety++;
         }
-         if(safety >= maxSteps) Debug.LogError("ReconstructPath: Limite de sécurité atteinte, boucle infinie ?");
+        if(safety >= maxSteps) Debug.LogError("ReconstructPath: Limite de sécurité atteinte!");
         totalPath.Reverse();
         return totalPath;
     }
@@ -187,7 +541,7 @@ public class EnemyTankController : MonoBehaviour
                 if (Mathf.Abs(x) + Mathf.Abs(y) == 2) { // Diagonale
                     Vector2Int n1 = new Vector2Int(position.x + x, position.y);
                     Vector2Int n2 = new Vector2Int(position.x, position.y + y);
-                    if (!IsWalkable(n1) || !IsWalkable(n2)) continue; // Bloqué par un coin
+                    if (!IsWalkable(n1) || !IsWalkable(n2)) continue;
                 }
                 neighbors.Add(neighborPos);
             }
@@ -204,8 +558,8 @@ public class EnemyTankController : MonoBehaviour
     }
 
     Vector2Int WorldToGrid(Vector2 worldPosition) {
-        int x = Mathf.RoundToInt(worldPosition.x / tileSize);
-        int y = Mathf.RoundToInt(worldPosition.y / tileSize);
+        int x = Mathf.FloorToInt(worldPosition.x / tileSize);
+        int y = Mathf.FloorToInt(worldPosition.y / tileSize);
         x = Mathf.Clamp(x, 0, gridSize.x - 1);
         y = Mathf.Clamp(y, 0, gridSize.y - 1);
         return new Vector2Int(x, y);
@@ -217,102 +571,157 @@ public class EnemyTankController : MonoBehaviour
         return new Vector2(x, y);
     }
 
-    // ========================================
-    // --- Fonctions de Mouvement/Rotation (Inchangées par rapport à votre code) ---
-    // ========================================
+    // Classe interne PriorityQueue
+    public class PriorityQueue<T> {
+        private List<KeyValuePair<T, float>> elements = new List<KeyValuePair<T, float>>();
+        public int Count => elements.Count;
+        public void Enqueue(T item, float priority) {
+            elements.Add(new KeyValuePair<T, float>(item, priority));
+            elements.Sort((pair1, pair2) => pair1.Value.CompareTo(pair2.Value));
+        }
+        public T Dequeue() {
+            if (elements.Count == 0) throw new System.InvalidOperationException("Priority queue is empty");
+            var item = elements[0].Key; elements.RemoveAt(0); return item;
+        }
+        public bool IsEmpty => elements.Count == 0;
+    }
+
+    #endregion
+
+    #region Mouvement & Rotation
 
     void MoveAlongPath() {
-        if (path != null && pathIndex < path.Count) {
-            Vector2 targetWaypoint = path[pathIndex];
-            transform.position = Vector2.MoveTowards(transform.position, targetWaypoint, moveSpeed * Time.deltaTime);
-            if (Vector2.Distance(transform.position, targetWaypoint) < 0.1f) {
-                pathIndex++;
-            }
+        if (currentPath == null || currentPathIndex >= currentPath.Count) return;
+        
+        Vector2 targetWaypoint = currentPath[currentPathIndex];
+        transform.position = Vector2.MoveTowards(transform.position, targetWaypoint, moveSpeed * Time.deltaTime);
+        
+        if (Vector2.Distance(transform.position, targetWaypoint) < 0.1f) {
+            currentPathIndex++;
         }
     }
 
-    // Note: Cette fonction, dans votre code original, fait tourner TOUT le tank vers le joueur.
-    // Elle pourrait entrer en conflit avec la rotation nécessaire pour suivre le chemin.
-    // Il serait peut-être préférable que cette fonction oriente vers le prochain waypoint,
-    // et que seule la fonction RotateCanonTowardsPlayer() vise le joueur.
-    void RotateTowardsTarget() {
-        if (playerTank != null) {
-            Vector2 direction = (playerTank.position - transform.position).normalized;
-            if (direction != Vector2.zero) {
-                float angle = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg - 90f; // Ajustez -90f si besoin
-                Quaternion targetRotation = Quaternion.Euler(0f, 0f, angle);
-                transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
-            }
+    void RotateChassisTowardsWaypoint() {
+        // Point cible différent selon l'état
+        Vector2 targetPoint;
+        
+        if (currentPath != null && currentPathIndex < currentPath.Count) {
+            targetPoint = currentPath[currentPathIndex];
+        } else if (currentState == AIState.AttackingPlayer && currentTargetPlayer != null) {
+            targetPoint = currentTargetPlayer.position;
+        } else {
+            return; // Pas de cible pour rotation
         }
-    }
-
-    // ========================================
-    // --- Nouvelles Fonctions de Combat ---
-    // ========================================
-
-    /// <summary>
-    /// Fait pivoter le CANON (objet enfant) vers le joueur.
-    /// </summary>
-    void RotateCanonTowardsPlayer() {
-        if (playerTank == null || canonPivot == null) return; // Sécurité
-
-        Vector2 direction = (playerTank.position - canonPivot.position).normalized;
+        
+        Vector2 direction = (targetPoint - (Vector2)transform.position).normalized;
+        
         if (direction != Vector2.zero) {
-            float angle = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg - 90f; // Ajustez -90f si besoin
+            float angle = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg - 90f;
             Quaternion targetRotation = Quaternion.Euler(0f, 0f, angle);
-            // Applique la rotation progressive au canon
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, chassisRotationSpeed * Time.deltaTime);
+        }
+    }
+
+    void RotateCanonTowardsTarget() {
+        if (canonPivot == null) return;
+        
+        Vector2 direction = Vector2.zero;
+        bool hasAimTarget = false;
+        
+        if (currentState == AIState.AttackingPlayer && currentTargetPlayer != null) {
+            direction = ((Vector2)currentTargetPlayer.position - (Vector2)canonPivot.position).normalized;
+            hasAimTarget = true;
+        } else {
+            // En mode patrouille ou point de capture, le canon pointe soit vers le chemin soit dans la direction du chassis
+            if (currentPath != null && currentPathIndex < currentPath.Count) {
+                direction = ((Vector2)currentPath[currentPathIndex] - (Vector2)canonPivot.position).normalized;
+            } else {
+                direction = transform.up; // Direction du chassis
+            }
+            hasAimTarget = true;
+        }
+        
+        if (hasAimTarget && direction != Vector2.zero) {
+            float angle = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg - 90f;
+            Quaternion targetRotation = Quaternion.Euler(0f, 0f, angle);
             canonPivot.rotation = Quaternion.RotateTowards(canonPivot.rotation, targetRotation, canonRotationSpeed * Time.deltaTime);
         }
     }
 
-    /// <summary>
-    /// Instancie une balle ennemie et configure son script BulletDestruction.
-    /// </summary>
-    void Shoot() {
-        if (bulletPrefab == null || firePoint == null) {
-             Debug.LogWarning($"[{gameObject.name}] Tentative de tir mais prefab ou firepoint manquant.");
-             return; // Ne peut pas tirer
-        }
+    #endregion
 
-        // Instancie la balle à la position/rotation du firePoint (qui doit suivre le canon)
-        GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
-        BulletDestruction bulletScript = bulletInstance.GetComponent<BulletDestruction>();
+    #region Combat (Tir)
 
-        if (bulletScript != null) {
-            // Assigne les informations du tireur (l'ennemi) à la balle
-            bulletScript.shooter = this.gameObject;
-            bulletScript.shooterTag = this.gameObject.tag; // Devrait être "Enemy"
-        } else {
-            Debug.LogError($"Le prefab de balle '{bulletPrefab.name}' n'a pas le script BulletDestruction !", bulletPrefab);
+    void HandleShooting() {
+        if (currentState != AIState.AttackingPlayer || currentTargetPlayer == null) return;
+        
+        float distanceToPlayer = Vector2.Distance(transform.position, currentTargetPlayer.position);
+        
+        // Vérifier si le joueur est à portée de tir et si le délai entre les tirs est écoulé
+        if (distanceToPlayer <= shootingRange && Time.time >= nextFireTime) {
+            // Vérifier si le canon est suffisamment aligné avec la cible avant de tirer
+            Vector2 canonDirection = canonPivot.up;
+            Vector2 targetDirection = ((Vector2)currentTargetPlayer.position - (Vector2)canonPivot.position).normalized;
+            float angleDifference = Vector2.Angle(canonDirection, targetDirection);
+            
+            // Ne tire que si l'angle est assez petit (bon alignement)
+            if (angleDifference < 20f) {
+                Shoot();
+                nextFireTime = Time.time + fireRate;
+            }
         }
     }
 
-    // ========================================
-    // --- Classe Interne PriorityQueue (Inchangée) ---
-    // ========================================
-    // (Copiez/Collez la classe PriorityQueue<T> ici, comme dans les versions précédentes)
-    public class PriorityQueue<T> {
-         private List<KeyValuePair<T, float>> elements = new List<KeyValuePair<T, float>>();
-         public int Count => elements.Count;
-         public void Enqueue(T item, float priority) {
-             elements.Add(new KeyValuePair<T, float>(item, priority));
-             int i = elements.Count - 1;
-             var newItem = elements[i];
-             while (i > 0 && elements[i - 1].Value > newItem.Value) {
-                 elements[i] = elements[i - 1]; i--;
-             }
-             elements[i] = newItem;
-         }
-         public T Dequeue() {
-             if (elements.Count == 0) throw new System.InvalidOperationException("File vide");
-             var item = elements[0].Key; elements.RemoveAt(0); return item;
-         }
-         public bool Contains(T item) {
-              EqualityComparer<T> comparer = EqualityComparer<T>.Default;
-              foreach (var element in elements) if (comparer.Equals(element.Key, item)) return true;
-              return false;
-         }
-         public bool IsEmpty => elements.Count == 0;
-     }
-    // ========================================
+    void Shoot() {
+        if (bulletPrefab == null || firePoint == null) return;
+        
+        // Instancier la balle
+        GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
+        
+        // Configurer la balle avec les informations de son tireur
+        BulletDestruction bulletScript = bulletInstance.GetComponent<BulletDestruction>();
+        if (bulletScript != null) {
+            bulletScript.shooter = this.gameObject;
+            bulletScript.shooterTag = this.gameObject.tag;
+        } else {
+            Debug.LogError($"Prefab balle '{bulletPrefab.name}' manque script BulletDestruction!", bulletPrefab);
+        }
+    }
+
+    #endregion
+    
+    #region Debug & Visualisation
+    
+    // Optionnel: Visualisation pour le débogage
+    void OnDrawGizmosSelected() {
+        // Afficher la plage de détection des joueurs
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, detectionRange);
+        
+        // Afficher la portée de tir
+        Gizmos.color = Color.red;
+        Gizmos.DrawWireSphere(transform.position, shootingRange);
+        
+        // Afficher le chemin actuel
+        if (currentPath != null && currentPath.Count > 0) {
+            Gizmos.color = Color.green;
+            for (int i = 0; i < currentPath.Count - 1; i++) {
+                Gizmos.DrawLine(currentPath[i], currentPath[i + 1]);
+            }
+            
+            // Afficher le point actuel du chemin
+            if (currentPathIndex < currentPath.Count) {
+                Gizmos.color = Color.blue;
+                Gizmos.DrawSphere(currentPath[currentPathIndex], 0.2f);
+            }
+        }
+        
+        // Afficher le point de patrouille actuel
+        if (currentState == AIState.Patrolling) {
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(patrolTargetPosition, 0.3f);
+        }
+    }
+    
+    #endregion
 }
