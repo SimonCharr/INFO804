@@ -34,6 +34,7 @@ public class AllyTankController : MonoBehaviour
     public List<CapturePoint> capturePointsOfInterest;
     [Tooltip("Distance pour considérer un point de patrouille atteint")]
     public float patrolPointReachedDistance = 1.5f;
+    // targetCountPenaltyWeight Supprimé
     [Tooltip("Temps minimum entre changements d'état pour éviter oscillations")]
     public float minStateChangeInterval = 1.5f;
     [Tooltip("Temps minimum entre changements de point de patrouille")]
@@ -48,17 +49,17 @@ public class AllyTankController : MonoBehaviour
     private enum AIState { Idle, SeekingCapturePoint, AttackingEnemy, Patrolling }
     private AIState currentState = AIState.Patrolling;
     private Transform currentTargetEnemy = null;
-    private CapturePoint currentTargetCapturePoint = null;
+    private CapturePoint currentTargetCapturePoint = null; // Cible point ACTUELLE et CONSERVÉE
     private Vector3 currentNavigationTargetPosition;
     private List<Vector2> currentPath;
     private int currentPathIndex;
     private float timeSinceLastPathRecalc = 0f;
-    private Vector3 lastTargetPosition;
+    private Vector3 lastTargetPosition; // Mémorise la cible NAV du dernier calcul
     private float nextFireTime = 0f;
     private TankHealth selfHealth;
-    private string ownTag;
+    private string ownTag; // Sera "Ally" ou "Player"
     private string enemyTag = "Enemy";
-    // Suppression de la coordination par comptage
+    // Plus de Dictionnaire statique de coordination
     private float lastStateChangeTime = -10f;
     private float lastPatrolPointChangeTime = -10f;
 
@@ -95,9 +96,10 @@ public class AllyTankController : MonoBehaviour
         currentNavigationTargetPosition = transform.position;
         lastTargetPosition = transform.position;
         lastStateChangeTime = Time.time;
-        lastPatrolPointChangeTime = Time.time - minPatrolPointChangeInterval;
-        SelectNewPatrolPoint();
+        lastPatrolPointChangeTime = Time.time - minPatrolPointChangeInterval; // Permet choix immédiat
+        SelectNewPatrolPoint(); // Sélectionne la 1ère destination de patrouille
         Debug.Log($"TEST [{gameObject.name} ({ownTag})] Start: Init terminée. Pathfinding: A*. Etat: {currentState}. Navigue vers {currentNavigationTargetPosition}");
+        // Rappel: ResetTargetCounts() doit être appelé par un GameManager
     }
 
     // Défini UNE SEULE FOIS
@@ -117,7 +119,7 @@ public class AllyTankController : MonoBehaviour
 
     // Défini UNE SEULE FOIS
     void OnDestroy() {
-        // Plus de DecrementTargetCount à faire
+        // Plus rien à faire sur les compteurs
         Debug.Log($"TEST [{gameObject.name} ({ownTag})] OnDestroy.");
     }
 
@@ -145,7 +147,7 @@ public class AllyTankController : MonoBehaviour
     // Défini UNE SEULE FOIS (Version Simplifiée "Têtue")
     void DecideNextAction() {
         AIState previousState = currentState;
-        CapturePoint previousTargetCapturePoint = currentTargetCapturePoint; // Pour détecter changement
+        CapturePoint previousTargetCapturePoint = currentTargetCapturePoint;
         bool forcePathRecalc = false;
         bool stateChanged = false;
 
@@ -157,7 +159,7 @@ public class AllyTankController : MonoBehaviour
                 Debug.Log($"TEST [{gameObject.name} ({ownTag})] STATE CHANGE: {previousState} -> AttackingEnemy ({currentTargetEnemy.name})");
                 currentState = AIState.AttackingEnemy; stateChanged = true;
                 lastStateChangeTime = Time.time;
-                currentTargetCapturePoint = null; // Oublie le point
+                currentTargetCapturePoint = null; // Oublie le point logique
                 forcePathRecalc = true;
             }
             if (Vector3.Distance(currentNavigationTargetPosition, currentTargetEnemy.position) > targetMovementThreshold) {
@@ -173,18 +175,16 @@ public class AllyTankController : MonoBehaviour
             }
 
             if (currentPointIsValid && currentState == AIState.SeekingCapturePoint) {
-                 // Garde la cible actuelle, vérifie juste la destination NAV
                  if (currentNavigationTargetPosition != currentTargetCapturePoint.transform.position) {
                     currentNavigationTargetPosition = currentTargetCapturePoint.transform.position;
                     forcePathRecalc = true;
                 }
             }
-            else { // Pas de cible valide ou pas en Seeking
+            else {
                 CapturePoint closestValidPoint = FindClosestCapturePoint();
-                if (closestValidPoint != null) { // Un point valide existe
-                    // Change seulement si on peut OU si l'état était différent OU si le point le plus proche a changé
+                if (closestValidPoint != null) {
                     if (canChangeNonAttackState || currentState != AIState.SeekingCapturePoint || closestValidPoint != currentTargetCapturePoint) {
-                        if (currentState != AIState.SeekingCapturePoint || closestValidPoint != currentTargetCapturePoint) { // Logique de changement
+                         if (currentState != AIState.SeekingCapturePoint || closestValidPoint != currentTargetCapturePoint) {
                             Debug.Log($"TEST [{gameObject.name} ({ownTag})] STATE/TARGET CHANGE: {previousState} -> SeekingCapturePoint vers {closestValidPoint.pointName}.");
                             currentState = AIState.SeekingCapturePoint; stateChanged = true;
                             lastStateChangeTime = Time.time;
@@ -193,7 +193,6 @@ public class AllyTankController : MonoBehaviour
                             forcePathRecalc = true;
                         }
                     }
-                    // Si on ne peut pas changer d'état, on reste où on est
                 }
                 // 3. Pas d'ennemi et aucun point valide : Patrouille
                 else {
@@ -212,7 +211,6 @@ public class AllyTankController : MonoBehaviour
         }
         if (forcePathRecalc) { currentPath = null; }
     }
-
 
     // Défini UNE SEULE FOIS (Version Simple "Plus Proche")
     CapturePoint FindClosestCapturePoint() {
@@ -273,7 +271,7 @@ public class AllyTankController : MonoBehaviour
             newTarget = transform.position;
         }
         currentNavigationTargetPosition = newTarget;
-        lastTargetPosition = currentNavigationTargetPosition; // Mémorise pour HandlePathfinding
+        lastTargetPosition = currentNavigationTargetPosition;
         currentPath = null; // Invalide chemin actuel
     }
     #endregion
@@ -284,27 +282,18 @@ public class AllyTankController : MonoBehaviour
     void HandlePathfinding() {
         timeSinceLastPathRecalc += Time.deltaTime;
         bool hasTarget = (currentState != AIState.Idle);
-
         if (!hasTarget) { currentPath = null; return; }
-
         Vector2Int startGridPos = WorldToGrid(transform.position);
         Vector2Int endGridPos = WorldToGrid(currentNavigationTargetPosition);
-
-        // Si déjà dans la case cible ET PAS en patrouille
         if (startGridPos == endGridPos && currentState != AIState.Patrolling) {
-            if(currentPath != null) { currentPath = null; } // Vide le chemin si on vient d'arriver
+            if(currentPath != null) { currentPath = null; }
             return;
         }
-
-        // Logique de recalcul
         bool targetPosChanged = Vector3.Distance(currentNavigationTargetPosition, lastTargetPosition) > targetMovementThreshold;
         bool timerElapsed = timeSinceLastPathRecalc >= pathRecalculationRate;
         bool pathInvalid = currentPath == null || currentPath.Count == 0;
         bool needsRecalc = pathInvalid || timerElapsed || (currentState == AIState.AttackingEnemy && targetPosChanged) || (currentState != AIState.AttackingEnemy && targetPosChanged);
-
-        if (needsRecalc && startGridPos != endGridPos) { // Ne recalcule que si start != end
-            // string reason = $"Invalid:{pathInvalid}, Timer:{timerElapsed}, TargetMoved:{targetPosChanged}";
-            // Debug.Log($"TEST [{gameObject.name} ({ownTag})] HandlePathfinding: Recalcul A* demandé. Raison(s): ({reason})");
+        if (needsRecalc && startGridPos != endGridPos) {
             FindPath_AStar(currentNavigationTargetPosition, startGridPos, endGridPos); // Appel A*
             timeSinceLastPathRecalc = 0f;
             lastTargetPosition = currentNavigationTargetPosition;
@@ -314,74 +303,69 @@ public class AllyTankController : MonoBehaviour
     // Défini UNE SEULE FOIS
     void FindPath_AStar(Vector3 targetNavPosition, Vector2Int startGridPos, Vector2Int endGridPos) {
         List<Vector2> rawPath = AStarSearch(startGridPos, endGridPos); // Chemin brut A*
-
         if (rawPath != null && rawPath.Count > 0) {
              currentPath = ApplyPathOffset(rawPath); // Applique le décalage
-             // Debug.Log($"TEST [{gameObject.name} ({ownTag})] FindPath A*: REUSSI + OFFSET. Chemin {currentPath.Count} points.");
         } else {
              currentPath = null;
-             if (startGridPos != endGridPos) {
-                 Debug.LogWarning($"TEST [{gameObject.name} ({ownTag})] FindPath A*: ECHEC Pathfinding de {startGridPos} vers {endGridPos}");
-             }
+             if (startGridPos != endGridPos) { Debug.LogWarning($"TEST [{gameObject.name} ({ownTag})] FindPath A*: ECHEC Pathfinding de {startGridPos} vers {endGridPos}"); }
         }
-
         if (currentPath != null && currentPath.Count > 0 && Vector2.Distance(transform.position, currentPath[0]) < tileSize * 0.15f) {
             currentPath.RemoveAt(0);
         }
-        currentPathIndex = 0; // Commence au début du chemin
+        currentPathIndex = 0;
     }
 
     // --- Algorithme A* et Helpers ---
     // Défini UNE SEULE FOIS
     float Heuristic(Vector2Int a, Vector2Int b) {
+        // Commentaire: Heuristique de Manhattan (distance L1) - rapide et admissible pour une grille.
         return Mathf.Abs(a.x - b.x) + Mathf.Abs(a.y - b.y);
     }
 
     // Défini UNE SEULE FOIS
     List<Vector2> AStarSearch(Vector2Int start, Vector2Int end) {
+        // Commentaire: Implémentation standard de A*.
+        // Utilise une PriorityQueue pour explorer les noeuds les plus prometteurs (coût + heuristique).
         if (!IsWithinBounds(start) || !IsWalkable(start)) { return null; }
-        if (!IsWithinBounds(end) || !IsWalkable(end)) { Debug.LogWarning($"A* Target node {end} is not walkable or out of bounds!"); return null; } // Ajout warning si cible invalide
+        if (!IsWithinBounds(end) || !IsWalkable(end)) { Debug.LogWarning($"A* Target node {end} is not walkable or out of bounds!"); return null; }
         var frontier = new PriorityQueue<Vector2Int>();
-        frontier.Enqueue(start, Heuristic(start, end));
+        frontier.Enqueue(start, Heuristic(start, end)); // Priorité = Heuristique seule au départ (coût = 0)
         var cameFrom = new Dictionary<Vector2Int, Vector2Int>{ [start] = start };
-        var costSoFar = new Dictionary<Vector2Int, float>{ [start] = 0 };
+        var costSoFar = new Dictionary<Vector2Int, float>{ [start] = 0 }; // Coût réel depuis le départ
+
         while (frontier.Count > 0) {
-            var current = frontier.Dequeue();
-            if (current == end) { return ReconstructPath(cameFrom, end); }
-            foreach (var next in GetNeighbors(current)) {
-                float moveCost = Vector2.Distance(current, next);
-                float newCost = costSoFar[current] + moveCost;
+            var current = frontier.Dequeue(); // Prend le noeud avec la plus petite priorité (coût+heuristique)
+            if (current == end) { return ReconstructPath(cameFrom, end); } // Objectif atteint
+
+            foreach (var next in GetNeighbors(current)) { // Pour chaque voisin accessible
+                float moveCost = Vector2.Distance(current, next); // Coût du déplacement vers ce voisin
+                float newCost = costSoFar[current] + moveCost; // Coût total pour atteindre ce voisin via 'current'
+                // Si on n'a jamais atteint 'next' ou si ce chemin est meilleur que le précédent pour 'next'
                 if (!costSoFar.ContainsKey(next) || newCost < costSoFar[next]) {
-                    costSoFar[next] = newCost;
+                    costSoFar[next] = newCost; // Met à jour le meilleur coût pour atteindre 'next'
+                    // --- POINT CLÉ A* ---
+                    // La priorité est la somme du coût réel depuis le départ (newCost)
+                    // et une estimation du coût restant jusqu'à la cible (Heuristic).
                     float priority = newCost + Heuristic(next, end);
-                    frontier.Enqueue(next, priority);
-                    cameFrom[next] = current;
+                    // ---------------------
+                    frontier.Enqueue(next, priority); // Ajoute le voisin à la liste des noeuds à explorer
+                    cameFrom[next] = current; // Mémorise qu'on est passé par 'current' pour atteindre 'next'
                 }
             }
         }
-        return null;
+        return null; // Aucun chemin trouvé
     }
 
     // Défini UNE SEULE FOIS
     List<Vector2> ReconstructPath(Dictionary<Vector2Int, Vector2Int> cameFrom, Vector2Int current) {
         var totalPath = new List<Vector2>();
         if (!cameFrom.ContainsKey(current)) { Debug.LogError($"TEST [{gameObject.name}] ReconstructPath: Nœud cible {current} non trouvé dans cameFrom."); return totalPath; }
-        Vector2Int startNode = cameFrom.FirstOrDefault(kvp => kvp.Key == kvp.Value).Key; // Devrait être la clé où la valeur est elle-même
-        // Fallback si le startNode n'est pas trouvé (devrait pas arriver si start est dans cameFrom)
-        if(!cameFrom.ContainsKey(startNode) && cameFrom.Count > 0) startNode = cameFrom.Keys.First(); // Prend une clé au hasard? Non, mauvaise idée.
-                                                                                                    // Le startNode est celui qui a été mis avec lui-même comme valeur.
-
+        Vector2Int startNode = cameFrom.FirstOrDefault(kvp => kvp.Key == kvp.Value).Key;
         Vector2Int step = current; int safety = 0; const int maxSteps = 10000;
         while (step != startNode && safety < maxSteps) {
             totalPath.Add(GridToWorld(step));
-            if (!cameFrom.ContainsKey(step)) { Debug.LogError($"TEST [{gameObject.name}] ReconstructPath: Nœud {step} manquant."); break; }
-             // Vérifie si la clé existe avant d'y accéder pour éviter boucle infinie si startNode est mal identifié
-             if (cameFrom.ContainsKey(step)) {
-                 step = cameFrom[step];
-             } else {
-                 Debug.LogError($"TEST [{gameObject.name}] ReconstructPath: Clé {step} non trouvée dans cameFrom, arrêt.");
-                 break; // Arrête pour éviter une boucle infinie
-             }
+            if (!cameFrom.ContainsKey(step)) { Debug.LogError($"TEST [{gameObject.name}] ReconstructPath: Nœud {step} manquant pendant reconstruction."); break; }
+             step = cameFrom[step]; // Peut causer une erreur si la clé n'existe pas
             safety++;
         }
         if(safety >= maxSteps) Debug.LogError($"TEST [{gameObject.name}] ReconstructPath: Limite de sécurité atteinte!");
@@ -395,7 +379,7 @@ public class AllyTankController : MonoBehaviour
             if (x == 0 && y == 0) continue;
             Vector2Int neighborPos = new Vector2Int(position.x + x, position.y + y);
             if (!IsWithinBounds(neighborPos) || !IsWalkable(neighborPos)) continue;
-            if (Mathf.Abs(x) + Mathf.Abs(y) == 2) { // Diagonale
+            if (Mathf.Abs(x) + Mathf.Abs(y) == 2) {
                 Vector2Int n1 = new Vector2Int(position.x + x, position.y); Vector2Int n2 = new Vector2Int(position.x, position.y + y);
                 if (!IsWalkable(n1) || !IsWalkable(n2)) continue;
             } neighbors.Add(neighborPos);
@@ -409,9 +393,10 @@ public class AllyTankController : MonoBehaviour
      bool IsWalkable(Vector2Int gridPosition) {
         Vector2 worldPosition = GridToWorld(gridPosition); float checkRadius = tileSize / 2f * 0.9f;
         Collider2D hit = Physics2D.OverlapCircle(worldPosition, checkRadius, obstacleLayer);
-        if (hit != null) {
-             Debug.LogWarning($"TEST IsWalkable: Case {gridPosition} considérée OBSTACLE à cause de '{hit.name}' sur layer '{LayerMask.LayerToName(hit.gameObject.layer)}'");
-        }
+        // Décommenter pour voir les obstacles détectés
+        // if (hit != null) {
+        //      Debug.LogWarning($"TEST IsWalkable: Case {gridPosition} OBSTACLE cause '{hit.name}' layer '{LayerMask.LayerToName(hit.gameObject.layer)}'");
+        // }
         return hit == null;
     }
 
@@ -427,6 +412,7 @@ public class AllyTankController : MonoBehaviour
     }
 
     // --- Classe Interne PriorityQueue (définie UNE SEULE FOIS) ---
+    // (Doit être définie UNE SEULE FOIS dans votre projet)
     public class PriorityQueue<T> {
         private List<KeyValuePair<T, float>> elements = new List<KeyValuePair<T, float>>();
         public int Count => elements.Count;
@@ -479,13 +465,10 @@ public class AllyTankController : MonoBehaviour
        if (hit.collider != null) {
             Transform targetTransform = null;
             if (currentState == AIState.AttackingEnemy && currentTargetEnemy != null) targetTransform = currentTargetEnemy;
-            // Si on a touché qq chose et que ce n'est PAS notre cible ennemie -> pas clair
-            if (targetTransform != null && hit.transform != targetTransform) return false;
-            // Si on n'a pas de cible ennemie définie et qu'on touche qq chose -> pas clair
-            if(targetTransform == null) return false;
+            if (targetTransform != null && hit.transform == targetTransform) return true;
+            return false; // Obstacle touché
        }
-       // Si rien touché ou si on a touché la cible elle-même -> clair
-       return true;
+       return true; // Rien touché
      }
 
     #endregion
@@ -558,18 +541,17 @@ public class AllyTankController : MonoBehaviour
     void DrawPath() {
         if (currentPath != null && currentPath.Count > 0) {
             Color pathColor = Color.green;
-             // Vérifie si l'index est valide avant d'accéder au chemin
-             if (currentPathIndex < currentPath.Count) {
+            if (currentPathIndex < currentPath.Count) {
                  Debug.DrawLine(transform.position, currentPath[currentPathIndex], pathColor);
                  for (int i = currentPathIndex; i < currentPath.Count - 1; i++) {
                      Debug.DrawLine(currentPath[i], currentPath[i+1], pathColor);
                  }
-             } else if (currentPath.Count > 0) { // Si index dépasse mais chemin existe (on vient d'arriver?)
-                 Debug.DrawLine(transform.position, currentPath[currentPath.Count-1], pathColor * 0.5f); // Ligne estompée vers dernier point
-             }
+            } else if (currentPath.Count > 0) {
+                 Debug.DrawLine(transform.position, currentPath[currentPath.Count-1], pathColor * 0.5f);
+            }
         }
          if (currentState != AIState.Idle) {
-             Debug.DrawLine(transform.position, currentNavigationTargetPosition, Color.yellow); // Jaune pour la destination NAV
+             Debug.DrawLine(transform.position, currentNavigationTargetPosition, Color.yellow);
          }
     }
     #endregion
