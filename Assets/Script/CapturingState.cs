@@ -1,48 +1,42 @@
-using UnityEngine;
+using UnityEngine; // N'oubliez pas les using !
 
 public class CapturingState : IState
 {
     private CapturePoint owner;
-    private string teamCapturing; // Qui capture ("Player" ou "Enemy")
+    private string teamCapturing;
 
     public CapturingState(CapturePoint owner) {
         this.owner = owner;
-        this.teamCapturing = owner.capturingTeamTag; // Récupère qui capture depuis le propriétaire
+        this.teamCapturing = owner.capturingTeamTag;
     }
 
     public void Enter() {
-       // Debug.Log($"Entering Capturing State for {owner.pointName} by {teamCapturing}");
-        owner.controllingTeamTag = null; // Pas encore contrôlé
+        // Debug.Log($"Entering Capturing State for {owner.pointName} by {teamCapturing}");
+        owner.controllingTeamTag = null;
+        // Met à jour le statut public selon l'équipe qui capture
+        owner.SetStatus( (teamCapturing == "Player") ? PointStatus.CapturingPlayer : PointStatus.CapturingEnemy );
+        // owner.UpdateVisuals(); // Pas forcément nécessaire ici si Execute le fait
     }
 
     public void Execute() {
         int capturingTeamCount = owner.GetTeamCountInZone(teamCapturing);
-        // L'autre équipe
         string opposingTeam = (teamCapturing == "Player") ? "Enemy" : "Player";
         int opposingTeamCount = owner.GetTeamCountInZone(opposingTeam);
 
         if (capturingTeamCount > 0 && opposingTeamCount == 0) {
-            // Continue la capture
             owner.currentCaptureProgress += Time.deltaTime;
-            owner.UpdateVisuals(); // Met à jour la couleur pendant la capture
+            owner.UpdateVisuals(); // Met à jour l'indicateur de progrès
 
             if (owner.currentCaptureProgress >= owner.captureTime) {
-                // Capture terminée !
                 owner.controllingTeamTag = teamCapturing;
                 owner.SetState(new CapturedState(owner));
             }
         } else if (capturingTeamCount == 0 && opposingTeamCount == 0) {
-             // L'équipe qui capturait est partie, personne d'autre n'est là
-             owner.SetState(new NeutralState(owner)); // Retour à neutre (reset progress dans Enter de Neutral)
-        }
-        else {
-            // Contesté (l'autre équipe est arrivée ou l'équipe qui capturait est partie mais l'autre est là)
-             owner.SetState(new ContestedState(owner)); // Reset progress dans Enter de Contested
+             owner.SetState(new NeutralState(owner));
+        } else { // Contesté
+             owner.SetState(new ContestedState(owner));
         }
     }
 
-    public void Exit() {
-       // Debug.Log($"Exiting Capturing State for {owner.pointName}");
-       // Ne pas reset le progrès ici si on va vers Captured
-    }
+    public void Exit() { }
 }

@@ -2,6 +2,11 @@ using UnityEngine;
 using System.Collections.Generic;
 using System.Linq; // Nécessaire pour utiliser .Count( ... )
 
+// --- AJOUT DE L'ENUM ---
+// Définit les états logiques possibles du point de capture
+public enum PointStatus { Neutral, CapturingPlayer, CapturingEnemy, ControlledPlayer, ControlledEnemy, Contested }
+// -----------------------
+
 public class CapturePoint : MonoBehaviour
 {
     [Header("Configuration")]
@@ -14,7 +19,7 @@ public class CapturePoint : MonoBehaviour
     [Tooltip("Le SpriteRenderer principal de la zone (change de couleur)")]
     public SpriteRenderer zoneSprite;
     [Tooltip("Le Transform de l'objet enfant qui sert d'indicateur de progression (scale de 0 à 1)")]
-    public Transform captureProgressIndicator; // Assignez l'enfant "ProgressIndicator" ici
+    public Transform captureProgressIndicator;
 
     [Header("Couleurs Visuelles")]
     public Color neutralColor = Color.gray;
@@ -26,144 +31,131 @@ public class CapturePoint : MonoBehaviour
 
     // --- Variables d'état (gérées par les états) ---
     [HideInInspector] public float currentCaptureProgress = 0f;
-    [HideInInspector] public string controllingTeamTag = null; // Qui contrôle ("Player", "Enemy", ou null si personne)
-    [HideInInspector] public string capturingTeamTag = null;   // Qui est en train de capturer ("Player" ou "Enemy")
+    [HideInInspector] public string controllingTeamTag = null;
+    [HideInInspector] public string capturingTeamTag = null;
+
+    // --- AJOUT DE LA PROPRIÉTÉ PUBLIQUE ---
+    // Permet aux autres scripts de connaître facilement l'état actuel
+    public PointStatus CurrentStatus { get; private set; } = PointStatus.Neutral; // État initial
+    // --------------------------------------
 
     // --- Logique interne ---
-    private List<Collider2D> tanksInZone = new List<Collider2D>(); // Liste des tanks (collider) présents dans la zone
-    private StateMachine stateMachine;
-    private SpriteRenderer progressSpriteRenderer; // Cache le SpriteRenderer de l'indicateur
+    private List<Collider2D> tanksInZone = new List<Collider2D>();
+    private StateMachine stateMachine; // Garder privé si possible
+    private SpriteRenderer progressSpriteRenderer;
 
     void Start()
     {
-        // Initialisation de la State Machine
         stateMachine = new StateMachine();
 
         // Récupération et vérification du SpriteRenderer de l'indicateur
-        if (captureProgressIndicator != null)
-        {
+        if (captureProgressIndicator != null) {
             progressSpriteRenderer = captureProgressIndicator.GetComponent<SpriteRenderer>();
-            if (progressSpriteRenderer == null)
-            {
+            if (progressSpriteRenderer == null) {
                 Debug.LogError($"L'objet assigné à captureProgressIndicator sur {gameObject.name} n'a pas de SpriteRenderer!", this);
-                captureProgressIndicator = null; // Invalide la référence si pas de renderer
+                captureProgressIndicator = null;
             }
-        }
-        else
-        {
+        } else {
             Debug.LogError($"La référence captureProgressIndicator n'est pas assignée sur {gameObject.name}!", this);
         }
 
-         if (zoneSprite == null)
-        {
-             Debug.LogError($"La référence zoneSprite n'est pas assignée sur {gameObject.name}!", this);
+         if (zoneSprite == null) {
+              Debug.LogError($"La référence zoneSprite n'est pas assignée sur {gameObject.name}!", this);
         }
 
-
-        // Définit l'état initial comme Neutre
-        // L'appel à ChangeState va automatiquement appeler Enter() sur NeutralState,
-        // qui appellera UpdateVisuals() pour la première fois.
+        // Définit l'état initial comme Neutre (son Enter() mettra à jour CurrentStatus)
         stateMachine.ChangeState(new NeutralState(this));
     }
 
     void Update()
     {
-        // Exécute la logique de l'état actuel à chaque frame
-        // (par exemple, incrémenter la capture dans CapturingState)
         stateMachine.Update();
     }
 
-    // --- Détection d'entrée dans la zone ---
     void OnTriggerEnter2D(Collider2D other)
     {
-        // On ne s'intéresse qu'aux objets tagués "Player" ou "Enemy"
-        if (other.CompareTag("Player") || other.CompareTag("Enemy"))
-        {
-            // Ajoute le collider du tank à la liste s'il n'y est pas déjà
-            if (!tanksInZone.Contains(other))
-            {
+        if (other.CompareTag("Player") || other.CompareTag("Enemy")) {
+            if (!tanksInZone.Contains(other)) {
                 tanksInZone.Add(other);
-                // Ré-évalue immédiatement l'état actuel car la situation a changé
-                // CurrentState peut être null très brièvement au démarrage, d'où le '?'
-                stateMachine.CurrentState?.Execute();
-                 // Debug.Log($"{other.tag} ENTERED {pointName}. Count: {tanksInZone.Count}. Player: {GetTeamCountInZone("Player")}, Enemy: {GetTeamCountInZone("Enemy")}");
-
+                stateMachine.CurrentState?.Execute(); // Ré-évalue l'état
             }
         }
     }
 
-    // --- Détection de sortie de la zone ---
     void OnTriggerExit2D(Collider2D other)
     {
-        if (other.CompareTag("Player") || other.CompareTag("Enemy"))
-        {
-            // Retire le collider du tank de la liste s'il y était
-            if (tanksInZone.Remove(other))
-            {
-                 // Ré-évalue immédiatement l'état actuel
-                stateMachine.CurrentState?.Execute();
-                 // Debug.Log($"{other.tag} EXITED {pointName}. Count: {tanksInZone.Count}. Player: {GetTeamCountInZone("Player")}, Enemy: {GetTeamCountInZone("Enemy")}");
+        if (other.CompareTag("Player") || other.CompareTag("Enemy")) {
+            if (tanksInZone.Remove(other)) {
+                stateMachine.CurrentState?.Execute(); // Ré-évalue l'état
             }
         }
     }
 
-    // --- Méthodes utilitaires appelées par les états ---
-
-    // Compte combien de tanks d'une équipe sont présents
-    public int GetTeamCountInZone(string teamTag)
-    {
-        // Nettoie la liste des tanks qui auraient pu être détruits entre temps
+    // --- Méthodes utilitaires ---
+    public int GetTeamCountInZone(string teamTag) {
         tanksInZone.RemoveAll(tankCollider => tankCollider == null);
-        // Compte les tanks restants avec le bon tag
         return tanksInZone.Count(tankCollider => tankCollider.CompareTag(teamTag));
     }
 
-    // Remet à zéro la progression de capture
-    public void ResetCaptureProgress()
-    {
+    public void ResetCaptureProgress() {
         currentCaptureProgress = 0f;
     }
 
-    // Met à jour l'apparence visuelle du point et de l'indicateur
-    public void UpdateVisuals()
-    {
-        // 1. Mise à jour du sprite principal de la zone
-        if (zoneSprite != null)
-        {
-            if (stateMachine.CurrentState is ContestedState) {
-                zoneSprite.color = contestedColor;
-            } else if (stateMachine.CurrentState is CapturedState) {
-                zoneSprite.color = controllingTeamTag == "Player" ? playerColor : enemyColor;
-            } else { // Inclut NeutralState et CapturingState pour la couleur de base
-                zoneSprite.color = neutralColor;
+    // La mise à jour visuelle peut maintenant aussi utiliser CurrentStatus si besoin
+    public void UpdateVisuals() {
+        // 1. Mise à jour du sprite principal
+        if (zoneSprite != null) {
+            switch (CurrentStatus) { // Utilise la nouvelle propriété
+                case PointStatus.Neutral:
+                    zoneSprite.color = neutralColor;
+                    break;
+                case PointStatus.ControlledPlayer:
+                    zoneSprite.color = playerColor;
+                    break;
+                case PointStatus.ControlledEnemy:
+                    zoneSprite.color = enemyColor;
+                    break;
+                case PointStatus.Contested:
+                    // Option: Clignotement ou couleur fixe
+                    zoneSprite.color = (Mathf.Sin(Time.time * 8f) > 0) ? contestedColor : neutralColor;
+                    break;
+                case PointStatus.CapturingPlayer:
+                case PointStatus.CapturingEnemy:
+                    // Option: Garder neutre ou faire un fondu (comme indicateur)
+                     zoneSprite.color = neutralColor; // Garde neutre pendant capture
+                    break;
             }
         }
 
-        // 2. Mise à jour de l'indicateur de progression (cercle qui grandit)
-        if (captureProgressIndicator != null && progressSpriteRenderer != null)
-        {
-            if (stateMachine.CurrentState is CapturingState)
-            {
-                // Calcule le ratio 0..1
+        // 2. Mise à jour de l'indicateur de progression
+        if (captureProgressIndicator != null && progressSpriteRenderer != null) {
+            // Active si en capture, désactive sinon
+            bool isCapturing = (CurrentStatus == PointStatus.CapturingPlayer || CurrentStatus == PointStatus.CapturingEnemy);
+            captureProgressIndicator.gameObject.SetActive(isCapturing);
+
+            if (isCapturing) {
                 float progressRatio = Mathf.Clamp01(currentCaptureProgress / captureTime);
-                // Définit la couleur de l'indicateur
-                progressSpriteRenderer.color = capturingTeamTag == "Player" ? playerCapturingColor : enemyCapturingColor;
-                // Ajuste la taille (scale)
+                progressSpriteRenderer.color = (CurrentStatus == PointStatus.CapturingPlayer) ? playerCapturingColor : enemyCapturingColor;
                 captureProgressIndicator.localScale = new Vector3(progressRatio, progressRatio, 1f);
-                // S'assure qu'il est visible
-                captureProgressIndicator.gameObject.SetActive(true);
-            }
-            else // Pour tous les autres états (Neutral, Captured, Contested)
-            {
-                // Cache l'indicateur
-                captureProgressIndicator.gameObject.SetActive(false);
             }
         }
     }
 
-    // Permet aux états de changer l'état de ce CapturePoint
-    public void SetState(IState newState)
-    {
-        stateMachine.ChangeState(newState);
+    // Permet aux états de changer l'état et implicitement le CurrentStatus
+    public void SetState(IState newState) {
+        stateMachine.ChangeState(newState); // L'état appelera Enter() qui mettra à jour CurrentStatus
     }
+
+    // --- AJOUT : Méthode pour définir le statut (appelée par les états) ---
+    // Ceci est une alternative pour que les états n'aient pas besoin de connaître l'enum
+    // Mais il est plus propre de mettre à jour directement la propriété depuis chaque état.
+    // On va utiliser la mise à jour directe depuis les états.
+
+    // Ajout d'une méthode pour définir le statut depuis les états (MEILLEURE APPROCHE)
+     public void SetStatus(PointStatus newStatus)
+     {
+         CurrentStatus = newStatus;
+     }
+     // --------------------------------------------------------------------
+
 }

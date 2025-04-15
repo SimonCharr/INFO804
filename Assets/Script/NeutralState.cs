@@ -1,3 +1,5 @@
+using UnityEngine; // N'oubliez pas les using !
+
 public class NeutralState : IState
 {
     private CapturePoint owner;
@@ -8,6 +10,7 @@ public class NeutralState : IState
         owner.controllingTeamTag = null;
         owner.capturingTeamTag = null;
         owner.ResetCaptureProgress();
+        owner.SetStatus(PointStatus.Neutral); // <-- Met à jour le statut public
         owner.UpdateVisuals();
     }
 
@@ -16,21 +19,15 @@ public class NeutralState : IState
         int enemiesInZone = owner.GetTeamCountInZone("Enemy");
 
         if (playersInZone > 0 && enemiesInZone == 0) {
-            // Le joueur commence à capturer
             owner.capturingTeamTag = "Player";
             owner.SetState(new CapturingState(owner));
         } else if (enemiesInZone > 0 && playersInZone == 0) {
-            // L'ennemi commence à capturer
             owner.capturingTeamTag = "Enemy";
             owner.SetState(new CapturingState(owner));
         } else if (playersInZone > 0 && enemiesInZone > 0) {
-            // Zone contestée
             owner.SetState(new ContestedState(owner));
         }
-        // Si personne n'est dans la zone, on reste Neutre
     }
 
-    public void Exit() {
-        // Debug.Log($"Exiting Neutral State for {owner.pointName}");
-    }
+    public void Exit() { }
 }
