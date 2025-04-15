@@ -134,7 +134,8 @@ TextureImporter:
     secondaryTextures: []
     spriteCustomMetadata:
       entries: []
-    nameFileIdTable: {}
+    nameFileIdTable:
+      logotankiste_0: 3369084974260446109
   mipmapLimitGroupName: 
   pSDRemoveMatte: 0
   userData: 

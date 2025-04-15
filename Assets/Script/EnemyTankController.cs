@@ -58,6 +58,9 @@ public class EnemyTankController : MonoBehaviour
 
     #region Variables Internes
 
+    public AudioClip shootSound;
+    private AudioSource audioSource;
+
     // --- État Actuel de l'IA ---
     private enum AIState
     {
@@ -137,6 +140,14 @@ public class EnemyTankController : MonoBehaviour
         currentNavigationTargetPosition = transform.position; // Sur place au début
         lastTargetPosition = transform.position;
         SelectNewPatrolPoint(); // Sélectionne la 1ère destination de patrouille
+        if (audioSource == null) {
+            audioSource = GetComponentInChildren<AudioSource>();
+            if (audioSource == null) {
+                Debug.LogWarning("Aucun AudioSource trouvé dans les enfants !");
+            } else {
+                Debug.Log("AudioSource trouvé dans un enfant : " + audioSource.gameObject.name);
+            }
+        }  
         Debug.Log($"TEST [{gameObject.name}] Start: Initialisation terminée. Etat: {currentState}. Navigue vers {currentNavigationTargetPosition}");
         // Rappel: ResetTargetCounts() doit être appelé par un GameManager
     }
@@ -577,6 +588,13 @@ public class EnemyTankController : MonoBehaviour
     void Shoot() {
         if (bulletPrefab == null || firePoint == null) return;
         GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
+        if (shootSound != null && audioSource != null) {
+            audioSource.PlayOneShot(shootSound);
+            Debug.Log("Son de tir joué !");
+        } else {
+            if (shootSound == null) Debug.LogWarning("shootSound est null !");
+            if (audioSource == null) Debug.LogWarning("audioSource est null !");
+        }
         BulletDestruction bulletScript = bulletInstance.GetComponent<BulletDestruction>();
         if (bulletScript != null) {
             bulletScript.shooter = this.gameObject;

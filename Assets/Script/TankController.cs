@@ -22,6 +22,9 @@ public class TankController : MonoBehaviour
     private float nextFireTime = 0f;         // Temps auquel le prochain tir sera autorisé
     private Camera mainCamera;               // Cache la référence à la caméra principale
 
+    public AudioClip shootSound;
+    private AudioSource audioSource;
+
     void Awake()
     {
         // Récupère les composants nécessaires au démarrage
@@ -45,6 +48,15 @@ public class TankController : MonoBehaviour
         {
              Debug.LogWarning($"Le tank joueur '{gameObject.name}' n'a pas le tag 'Player'. Veuillez l'assigner pour que le système de dégâts fonctionne correctement.", this);
         }
+
+                if (audioSource == null) {
+            audioSource = GetComponentInChildren<AudioSource>();
+            if (audioSource == null) {
+                Debug.LogWarning("Aucun AudioSource trouvé dans les enfants !");
+            } else {
+                Debug.Log("AudioSource trouvé dans un enfant : " + audioSource.gameObject.name);
+            }
+        }     
     }
 
     void Update()
@@ -142,7 +154,13 @@ public class TankController : MonoBehaviour
 
         // Instancie la balle à la position et rotation du firePoint
         GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
-
+        if (shootSound != null && audioSource != null) {
+            audioSource.PlayOneShot(shootSound);
+            Debug.Log("Son de tir joué !");
+        } else {
+            if (shootSound == null) Debug.LogWarning("shootSound est null !");
+            if (audioSource == null) Debug.LogWarning("audioSource est null !");
+        }
         // Récupère le script de la balle instanciée
         BulletDestruction bulletScript = bulletInstance.GetComponent<BulletDestruction>();
 

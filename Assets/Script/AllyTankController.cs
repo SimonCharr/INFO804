@@ -2,9 +2,12 @@ using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
 
+
+
 [RequireComponent(typeof(TankHealth))]
 public class AllyTankController : MonoBehaviour
 {
+
     #region Variables Configurables (Inspecteur)
 
     [Header("Références Tank & Combat")]
@@ -45,7 +48,8 @@ public class AllyTankController : MonoBehaviour
     #endregion
 
     #region Variables Internes
-
+    public AudioClip shootSound;
+    private AudioSource audioSource;
     private enum AIState { Idle, SeekingCapturePoint, AttackingEnemy, Patrolling }
     private AIState currentState = AIState.Patrolling;
     private Transform currentTargetEnemy = null;
@@ -99,6 +103,14 @@ public class AllyTankController : MonoBehaviour
         lastPatrolPointChangeTime = Time.time - minPatrolPointChangeInterval; // Permet choix immédiat
         SelectNewPatrolPoint(); // Sélectionne la 1ère destination de patrouille
         Debug.Log($"TEST [{gameObject.name} ({ownTag})] Start: Init terminée. Pathfinding: A*. Etat: {currentState}. Navigue vers {currentNavigationTargetPosition}");
+        if (audioSource == null) {
+            audioSource = GetComponentInChildren<AudioSource>();
+            if (audioSource == null) {
+                Debug.LogWarning("Aucun AudioSource trouvé dans les enfants !");
+            } else {
+                Debug.Log("AudioSource trouvé dans un enfant : " + audioSource.gameObject.name);
+            }
+        }        
         // Rappel: ResetTargetCounts() doit être appelé par un GameManager
     }
 
@@ -529,6 +541,13 @@ public class AllyTankController : MonoBehaviour
      void Shoot() {
         if (bulletPrefab == null || firePoint == null) return;
         GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
+        if (shootSound != null && audioSource != null) {
+            audioSource.PlayOneShot(shootSound);
+            Debug.Log("Son de tir joué !");
+        } else {
+            if (shootSound == null) Debug.LogWarning("shootSound est null !");
+            if (audioSource == null) Debug.LogWarning("audioSource est null !");
+        }
         BulletDestruction bulletScript = bulletInstance.GetComponent<BulletDestruction>();
         if (bulletScript != null) {
             bulletScript.shooter = this.gameObject; bulletScript.shooterTag = this.gameObject.tag;
